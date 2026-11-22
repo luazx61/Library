@@ -6,6 +6,7 @@ local HttpService = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
 local TextService = game:GetService("TextService")
 local MarketplaceService = game:GetService("MarketplaceService")
+local HapticService = game:GetService("HapticService")
 
 local Lumen = {
 	Version = "2.1.0",
@@ -40,6 +41,93 @@ local T = {
 	Accent = BLUE,
 }
 
+-- Font system: text created with Gotham/Medium/Bold is tracked so the family can be switched.
+local FontWeights = {
+	[Enum.Font.Gotham] = 1,
+	[Enum.Font.GothamMedium] = 2,
+	[Enum.Font.GothamBold] = 3,
+}
+local FontRegistry = setmetatable({}, { __mode = "k" })
+
+Lumen.FontName = "Gotham"
+Lumen.FontFamilies = {
+	Gotham = { Enum.Font.Gotham, Enum.Font.GothamMedium, Enum.Font.GothamBold },
+	Roboto = { Enum.Font.Roboto, Enum.Font.Roboto, Enum.Font.Roboto },
+	Ubuntu = { Enum.Font.Ubuntu, Enum.Font.Ubuntu, Enum.Font.Ubuntu },
+	Nunito = { Enum.Font.Nunito, Enum.Font.Nunito, Enum.Font.Nunito },
+	Jura = { Enum.Font.Jura, Enum.Font.Jura, Enum.Font.Jura },
+	Titillium = { Enum.Font.TitilliumWeb, Enum.Font.TitilliumWeb, Enum.Font.TitilliumWeb },
+	Oswald = { Enum.Font.Oswald, Enum.Font.Oswald, Enum.Font.Oswald },
+	SourceSans = { Enum.Font.SourceSans, Enum.Font.SourceSans, Enum.Font.SourceSansBold },
+	Code = { Enum.Font.Code, Enum.Font.Code, Enum.Font.Code },
+	RobotoMono = { Enum.Font.RobotoMono, Enum.Font.RobotoMono, Enum.Font.RobotoMono },
+}
+Lumen.FontNames = { "Gotham", "Roboto", "Ubuntu", "Nunito", "Jura", "Titillium", "Oswald", "SourceSans", "Code", "RobotoMono" }
+
+function Lumen:SetFont(name)
+	local fam = Lumen.FontFamilies[name]
+	if not fam then
+		return false
+	end
+	Lumen.FontName = name
+	for inst, w in pairs(FontRegistry) do
+		if inst.Parent then
+			inst.Font = fam[w]
+		end
+	end
+	return true
+end
+
+-- Live accent palettes (animated accent color)
+Lumen.LiveAccents = {
+	Aurora = { rgb(60, 220, 170), rgb(80, 140, 255), rgb(170, 100, 255) },
+	Galaxy = { rgb(90, 70, 255), rgb(200, 80, 255), rgb(60, 150, 255) },
+	Rainbow = { rgb(255, 80, 80), rgb(255, 200, 70), rgb(80, 220, 120), rgb(70, 190, 255), rgb(140, 100, 255), rgb(255, 90, 200) },
+	Thermal = { rgb(255, 70, 60), rgb(255, 170, 50), rgb(255, 230, 120) },
+	Cyber = { rgb(0, 240, 200), rgb(255, 0, 190) },
+	Ocean = { rgb(40, 110, 230), rgb(40, 210, 230) },
+	Sunset = { rgb(255, 110, 90), rgb(255, 190, 80), rgb(220, 90, 200) },
+	Mint = { rgb(70, 220, 160), rgb(120, 230, 240) },
+}
+
+function Lumen:AddLiveAccent(name, colors)
+	if type(name) == "string" and type(colors) == "table" and #colors >= 2 then
+		Lumen.LiveAccents[name] = colors
+	end
+end
+
+function Lumen:LiveAccentNames()
+	local out = {}
+	for k in pairs(Lumen.LiveAccents) do
+		out[#out + 1] = k
+	end
+	table.sort(out)
+	return out
+end
+
+local function sampleColors(list, t)
+	local n = #list
+	local x = (t % 1) * n
+	local i = math.floor(x)
+	local f = x - i
+	return list[i % n + 1]:Lerp(list[(i + 1) % n + 1], f)
+end
+
+-- Locked elements: client-side only (not a security boundary)
+function Lumen:IsAllowed(lock)
+	local lp = Players.LocalPlayer
+	if type(lock) ~= "table" then
+		lock = { lock }
+	end
+	for _, v in pairs(lock) do
+		local sv = tostring(v):lower()
+		if sv == tostring(lp.UserId) or sv == lp.Name:lower() or sv == lp.DisplayName:lower() then
+			return true
+		end
+	end
+	return false
+end
+
 local function New(class, props, children)
 	local inst = Instance.new(class)
 	local parent
@@ -53,6 +141,16 @@ local function New(class, props, children)
 	for _, c in ipairs(children or {}) do
 		c.Parent = inst
 	end
+	if inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox") then
+		local w = FontWeights[inst.Font]
+		if w then
+			FontRegistry[inst] = w
+			local fam = Lumen.FontFamilies[Lumen.FontName]
+			if fam then
+				inst.Font = fam[w]
+			end
+		end
+	end
 	if parent then
 		inst.Parent = parent
 	end
@@ -60,6 +158,9 @@ local function New(class, props, children)
 end
 
 local function Tween(i, props, t, style, dir)
+	if Lumen.Perf then
+		t = 0
+	end
 	local tw = TweenService:Create(i, TweenInfo.new(t or 0.2, style or Enum.EasingStyle.Quad, dir or Enum.EasingDirection.Out), props)
 	tw:Play()
 	return tw
@@ -186,6 +287,23 @@ local function webImage(url, cb)
 			warn("[Lumen] Image failed: " .. tostring(err))
 		end
 	end)
+end
+
+-- Default picture used for the window background, loading screen, open button and notifications.
+-- Override per window (Background / LoadingImage / ButtonImage / NotifyImage) or set any of them to false.
+Lumen.DefaultImage = "rbxthumb://type=Asset&id=97098047308546&w=420&h=420"
+
+local function applyImage(label, src)
+	local url = tostring(src)
+	if type(src) == "number" or tonumber(url) then
+		label.Image = "rbxassetid://" .. url
+	elseif url:find("^https?://") then
+		webImage(url, function(a)
+			label.Image = a
+		end)
+	else
+		label.Image = url
+	end
 end
 
 -- Icon registry: name -> rbxassetid number (fill these in, or pass ids directly).
@@ -403,6 +521,191 @@ function Lumen:LoadAutoProfile()
 	return nil
 end
 
+-- Execution log to a Discord webhook (opt-in: CreateWindow({ Webhook = "https://discord.com/api/webhooks/..." })).
+-- Sends: profile, execution count on this device, game, server link. A visible notice is shown to the user.
+local function httpRequest()
+	return (type(request) == "function" and request)
+		or (type(http_request) == "function" and http_request)
+		or (syn and type(syn.request) == "function" and syn.request)
+		or (http and type(http.request) == "function" and http.request)
+		or (fluxus and type(fluxus.request) == "function" and fluxus.request)
+		or nil
+end
+
+local EXEC_FILE = "Lumen/executions.json"
+
+-- Default webhook for execution logs. Pass Webhook = false to CreateWindow to turn it off.
+Lumen.Webhook = "https://discord.com/api/webhooks/1565656184781017160/HrV859p0W-m7pCcuJmnb_WS5002K9kW0ojIlPbwibVIiY-5m-EoR1RzzJl2HmY0TwiS7"
+
+local function bumpExecutions(userId)
+	if not fsOK() then
+		return nil
+	end
+	local d = {}
+	pcall(function()
+		if isfile(EXEC_FILE) then
+			d = HttpService:JSONDecode(readfile(EXEC_FILE))
+		end
+	end)
+	local k = tostring(userId)
+	d[k] = (tonumber(d[k]) or 0) + 1
+	ensureFolder()
+	pcall(writefile, EXEC_FILE, HttpService:JSONEncode(d))
+	return d[k]
+end
+
+function Lumen:LogExecution(webhook, scriptName)
+	local req = httpRequest()
+	if type(webhook) ~= "string" or not webhook:find("^https://discord%.com/api/webhooks/") and not webhook:find("^https://discordapp%.com/api/webhooks/") then
+		return false
+	end
+	if not req then
+		return false
+	end
+	local lp = Players.LocalPlayer
+	local gameName = tostring(game.Name)
+	local ok, info = pcall(function()
+		return MarketplaceService:GetProductInfo(game.PlaceId)
+	end)
+	if ok and info and info.Name then
+		gameName = info.Name
+	end
+
+	local count = bumpExecutions(lp.UserId)
+	local jobId = tostring(game.JobId)
+	local server = "Not available (private server or Studio)"
+	if jobId ~= "" then
+		server = string.format(
+			"[Join this server](https://www.roblox.com/games/start?placeId=%d&gameInstanceId=%s)\nJob ID: `%s`",
+			game.PlaceId, jobId, jobId
+		)
+	end
+
+	local body = {
+		username = "Lumen Logger",
+		embeds = { {
+			title = "Script executed" .. (scriptName and (": " .. tostring(scriptName)) or ""),
+			color = 5025616,
+			thumbnail = {
+				url = string.format("https://www.roblox.com/headshot-thumbnail/image?userId=%d&width=150&height=150&format=png", lp.UserId),
+			},
+			fields = {
+				{
+					name = "Profile",
+					value = string.format(
+						"%s (@%s)\nID: `%d`\n[Open profile](https://www.roblox.com/users/%d/profile)\nAccount age: %d days",
+						lp.DisplayName, lp.Name, lp.UserId, lp.UserId, lp.AccountAge
+					),
+					inline = false,
+				},
+				{ name = "Executions (this device)", value = count and tostring(count) or "Unknown (no file access)", inline = true },
+				{ name = "Game", value = string.format("%s\nPlace ID: `%d`", gameName, game.PlaceId), inline = true },
+				{ name = "Server", value = server, inline = false },
+				{ name = "Players", value = string.format("%d/%d", #Players:GetPlayers(), Players.MaxPlayers), inline = true },
+			},
+			footer = { text = "Lumen v" .. Lumen.Version },
+			timestamp = DateTime.now():ToIsoDate(),
+		} },
+	}
+
+	local sent, res = pcall(req, {
+		Url = webhook,
+		Method = "POST",
+		Headers = { ["Content-Type"] = "application/json" },
+		Body = HttpService:JSONEncode(body),
+	})
+	if not sent then
+		warn("[Lumen] Webhook failed: " .. tostring(res))
+		return false
+	end
+	return true
+end
+
+-- Purchase log: posts to the webhook when the player buys an item/bundle through an in-game purchase prompt.
+-- Shows whether it was paid (Robux) or free. Only sees prompts made by the game while the script is running.
+local function validHook(webhook)
+	return type(webhook) == "string"
+		and (webhook:find("^https://discord%.com/api/webhooks/") ~= nil or webhook:find("^https://discordapp%.com/api/webhooks/") ~= nil)
+end
+
+function Lumen:LogPurchase(webhook, id, isBundle, scriptName)
+	local req = httpRequest()
+	if not req or not validHook(webhook) then
+		return false
+	end
+	local lp = Players.LocalPlayer
+	local ok, info = pcall(function()
+		return MarketplaceService:GetProductInfo(id, isBundle and Enum.InfoType.Bundle or Enum.InfoType.Asset)
+	end)
+	info = ok and info or {}
+
+	local price = info.PriceInRobux
+	if isBundle and type(info.Product) == "table" then
+		price = info.Product.PriceInRobux
+	end
+	local isFree = price == nil or price == 0
+	local creator = (info.Creator and info.Creator.Name) or "Unknown"
+	local itemName = info.Name or ("ID " .. tostring(id))
+	local url = string.format("https://www.roblox.com/%s/%d", isBundle and "bundles" or "catalog", id)
+	local limited = info.IsLimited or info.IsLimitedUnique
+
+	local jobId = tostring(game.JobId)
+	local server = jobId ~= "" and string.format(
+		"[Join this server](https://www.roblox.com/games/start?placeId=%d&gameInstanceId=%s)", game.PlaceId, jobId
+	) or "Not available"
+
+	local body = {
+		username = "Lumen Logger",
+		embeds = { {
+			title = (isBundle and "Bundle" or "Item") .. " purchased: " .. (isFree and "FREE" or "ROBUX"),
+			color = isFree and 5025616 or 16750848,
+			thumbnail = {
+				url = string.format("https://www.roblox.com/headshot-thumbnail/image?userId=%d&width=150&height=150&format=png", lp.UserId),
+			},
+			fields = {
+				{ name = "Item", value = string.format("[%s](%s)\nID: `%d`", itemName, url, id), inline = false },
+				{ name = "Price", value = isFree and "Free (non-Robux)" or ("R$ " .. tostring(price)), inline = true },
+				{ name = "Creator", value = creator, inline = true },
+				{ name = "Limited", value = limited and "Yes" or "No", inline = true },
+				{ name = "Buyer", value = string.format("%s (@%s)\nID: `%d`", lp.DisplayName, lp.Name, lp.UserId), inline = false },
+				{ name = "Game", value = string.format("%s\nPlace ID: `%d`", tostring(game.Name), game.PlaceId), inline = true },
+				{ name = "Server", value = server, inline = true },
+			},
+			footer = { text = "Lumen v" .. Lumen.Version .. (scriptName and (" | " .. tostring(scriptName)) or "") },
+			timestamp = DateTime.now():ToIsoDate(),
+		} },
+	}
+	local sent, res = pcall(req, {
+		Url = webhook,
+		Method = "POST",
+		Headers = { ["Content-Type"] = "application/json" },
+		Body = HttpService:JSONEncode(body),
+	})
+	if not sent then
+		warn("[Lumen] Purchase webhook failed: " .. tostring(res))
+	end
+	return sent
+end
+
+-- returns a list of connections (disconnect them to stop watching)
+function Lumen:WatchPurchases(webhook, scriptName)
+	local conns = {}
+	local lp = Players.LocalPlayer
+	conns[#conns + 1] = MarketplaceService.PromptPurchaseFinished:Connect(function(plr, assetId, purchased)
+		if plr == lp and purchased then
+			task.spawn(Lumen.LogPurchase, Lumen, webhook, assetId, false, scriptName)
+		end
+	end)
+	pcall(function()
+		conns[#conns + 1] = MarketplaceService.PromptBundlePurchaseFinished:Connect(function(plr, bundleId, purchased)
+			if plr == lp and purchased then
+				task.spawn(Lumen.LogPurchase, Lumen, webhook, bundleId, true, scriptName)
+			end
+		end)
+	end)
+	return conns
+end
+
 function Lumen:Notify(n)
 	local w = Lumen.Windows[#Lumen.Windows]
 	if w then
@@ -480,6 +783,13 @@ function Lumen:CreateWindow(cfg)
 		end
 	end
 
+	if cfg.Font and Lumen.FontFamilies[cfg.Font] then
+		Lumen.FontName = cfg.Font
+	end
+	if winState and winState.font and Lumen.FontFamilies[winState.font] then
+		Lumen.FontName = winState.font
+	end
+
 	local parent = guiParent()
 	if cfg.Name then
 		for _, g in ipairs(parent:GetChildren()) do
@@ -507,6 +817,9 @@ function Lumen:CreateWindow(cfg)
 	Gui:SetAttribute("LumenId", cfg.Name or "Lumen")
 	W.Gui = Gui
 
+	local liveName, neonOn, glowOn, hapticsOn = nil, false, false, false
+	local particlesOn, wmOn, WatermarkFrame = true, false, nil
+	local staticAccent = T.Accent
 	local saveWin
 	local soundOn = cfg.Sounds ~= false
 	local soundVol = cfg.SoundVolume or 0.5
@@ -519,6 +832,9 @@ function Lumen:CreateWindow(cfg)
 	local soundCache = {}
 
 	local function playSound(name)
+		if (name == "click" or name == "toggle") and W._buzz then
+			W._buzz()
+		end
 		if not soundOn then
 			return
 		end
@@ -671,6 +987,10 @@ function Lumen:CreateWindow(cfg)
 
 	local WIDTH = cfg.Size and cfg.Size.X or 660
 	local HEIGHT = cfg.Size and cfg.Size.Y or 400
+	if winState and winState.ww and winState.wh then
+		WIDTH = math.clamp(winState.ww, 460, 1000)
+		HEIGHT = math.clamp(winState.wh, 300, 700)
+	end
 	local TOP = 58
 	local hidden, minimized, userScale = true, false, 1
 	if winState and winState.scale then
@@ -755,8 +1075,556 @@ function Lumen:CreateWindow(cfg)
 			nstyle = W.NotifyStyle,
 			sound = soundOn,
 			volume = soundVol,
+			live = liveName,
+			neon = neonOn,
+			glow = glowOn,
+			haptics = hapticsOn,
+			perf = Lumen.Perf or false,
+			font = Lumen.FontName,
+			particles = particlesOn,
+			wm = wmOn,
+			ww = WIDTH,
+			wh = HEIGHT,
 		}
+		if WatermarkFrame then
+			local wpos = WatermarkFrame.Position
+			d.wpx, d.wpo, d.wpy, d.wyo = wpos.X.Scale, wpos.X.Offset, wpos.Y.Scale, wpos.Y.Offset
+		end
 		pcall(writefile, winFile, HttpService:JSONEncode(d))
+	end
+
+	-- background image (asset id, icon name or link) + animated effects
+	local BgImage = New("ImageLabel", {
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		ImageTransparency = 1,
+		ScaleType = Enum.ScaleType.Crop,
+		Image = "",
+		Parent = Main,
+	}, { Corner(24) })
+	local BgDim = New("Frame", {
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = C.Black,
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Parent = Main,
+	}, { Corner(24) })
+	-- looping animation helpers (paused in performance mode)
+	local loops = {}
+	local function loop(inst, props, t, reverse, style)
+		local tw = TweenService:Create(inst, TweenInfo.new(t, style or Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, reverse or false), props)
+		loops[#loops + 1] = tw
+		if not Lumen.Perf then
+			tw:Play()
+		end
+		return tw
+	end
+
+	-- spinning highlight on a UIStroke (stroke color follows the accent)
+	local function spinRing(stroke)
+		local g = New("UIGradient", {
+			Rotation = 0,
+			Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 0),
+				NumberSequenceKeypoint.new(0.45, 0.85),
+				NumberSequenceKeypoint.new(0.55, 0.85),
+				NumberSequenceKeypoint.new(1, 0),
+			}),
+			Parent = stroke,
+		})
+		loop(g, { Rotation = 360 }, 2.4, false, Enum.EasingStyle.Linear)
+	end
+
+	-- shimmering placeholder; returns a function that removes it
+	local function skeleton(par, radius)
+		local f = New("Frame", {
+			Size = UDim2.fromScale(1, 1),
+			BackgroundColor3 = rgb(70, 84, 128),
+			BackgroundTransparency = 0.2,
+			BorderSizePixel = 0,
+			ZIndex = 8,
+			Parent = par,
+		}, { Corner(radius or 8) })
+		local g = New("UIGradient", {
+			Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 0.9),
+				NumberSequenceKeypoint.new(0.5, 0.1),
+				NumberSequenceKeypoint.new(1, 0.9),
+			}),
+			Offset = Vector2.new(-1, 0),
+			Parent = f,
+		})
+		local tw = loop(g, { Offset = Vector2.new(1, 0) }, 1.1, false, Enum.EasingStyle.Linear)
+		local done = false
+		return function()
+			if done then
+				return
+			end
+			done = true
+			tw:Cancel()
+			for i, v in ipairs(loops) do
+				if v == tw then
+					table.remove(loops, i)
+					break
+				end
+			end
+			Tween(f, { BackgroundTransparency = 1 }, 0.25)
+			task.delay(0.25, function()
+				f:Destroy()
+			end)
+		end
+	end
+
+	local bgOpacity = cfg.BackgroundOpacity or 0.6
+	local bgDim = cfg.BackgroundDim or 0.35
+	local hasBg = false
+
+	-- floating particles (behind the content)
+	local particleBox = New("Frame", {
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		ClipsDescendants = true,
+		Parent = Main,
+	})
+	local rng = Random.new()
+	local particles = {}
+	for i = 1, 18 do
+		local sz = rng:NextInteger(2, 5)
+		local fr = New("Frame", {
+			Size = UDim2.fromOffset(sz, sz),
+			BackgroundColor3 = C.White,
+			BackgroundTransparency = rng:NextNumber(0.65, 0.88),
+			BorderSizePixel = 0,
+			Parent = particleBox,
+		}, { New("UICorner", { CornerRadius = UDim.new(1, 0) }) })
+		if i % 3 == 0 then
+			bind(fr, "BackgroundColor3", "Accent")
+		end
+		local pt = { f = fr, x = rng:NextNumber(0.06, 0.94), y = rng:NextNumber(), v = rng:NextNumber(0.015, 0.05), sway = rng:NextNumber(0.005, 0.02), ph = rng:NextNumber(0, 6.28) }
+		fr.Position = UDim2.fromScale(pt.x, pt.y)
+		particles[i] = pt
+	end
+	local bgSrc, bgSprite = nil, nil
+	local spriteCfg, spriteFrame, spriteAcc = nil, 0, 0
+
+	local function applyBg()
+		Tween(BgImage, { ImageTransparency = hasBg and (1 - bgOpacity) or 1 }, 0.25)
+		Tween(BgDim, { BackgroundTransparency = hasBg and (1 - bgDim) or 1 }, 0.25)
+	end
+
+	local function loadBgImage(src)
+		local url = tostring(src)
+		if type(src) == "number" or tonumber(url) then
+			BgImage.Image = "rbxassetid://" .. url
+		elseif url:find("^https?://") then
+			webImage(url, function(a)
+				BgImage.Image = a
+			end)
+		elseif Lumen.Icons[url:lower()] and Lumen.Icons[url:lower()] ~= 0 then
+			BgImage.Image = "rbxassetid://" .. tostring(Lumen.Icons[url:lower()])
+		else
+			BgImage.Image = url
+		end
+	end
+
+	local function resetRect()
+		spriteCfg, bgSprite = nil, nil
+		BgImage.ImageRectSize = Vector2.new(0, 0)
+		BgImage.ImageRectOffset = Vector2.new(0, 0)
+	end
+
+	function W:SetBackground(src)
+		resetRect()
+		if src == nil or src == "" or src == false then
+			hasBg, bgSrc = false, nil
+			BgImage.Image = ""
+			applyBg()
+			return
+		end
+		hasBg, bgSrc = true, src
+		loadBgImage(src)
+		applyBg()
+	end
+
+	-- Animated background from a sprite sheet:
+	-- { Image = id, FrameSize = Vector2.new(w, h), Columns = 4, Rows = 4, Frames = 16, FPS = 12 }
+	function W:SetBackgroundSprite(c)
+		if type(c) ~= "table" or not c.Image then
+			W:SetBackground(nil)
+			return
+		end
+		local fs = c.FrameSize or Vector2.new(256, 256)
+		if typeof(fs) ~= "Vector2" then
+			fs = Vector2.new(fs[1] or fs.X or 256, fs[2] or fs.Y or 256)
+		end
+		resetRect()
+		spriteCfg = {
+			Image = c.Image,
+			FrameSize = fs,
+			Columns = math.max(c.Columns or 1, 1),
+			Rows = math.max(c.Rows or 1, 1),
+			Frames = c.Frames,
+			FPS = math.clamp(c.FPS or 12, 1, 30),
+		}
+		bgSprite = spriteCfg
+		spriteFrame, spriteAcc = 0, 0
+		hasBg, bgSrc = true, nil
+		loadBgImage(c.Image)
+		BgImage.ImageRectSize = fs
+		applyBg()
+	end
+
+	function W:SetBackgroundOpacity(v)
+		bgOpacity = math.clamp(v, 0, 1)
+		applyBg()
+	end
+
+	function W:SetBackgroundDim(v)
+		bgDim = math.clamp(v, 0, 1)
+		applyBg()
+	end
+
+	-- cursor glow (desktop only): three soft circles that follow the mouse
+	local glowParts = {}
+	for _, spec in ipairs({ { 130, 0.94 }, { 80, 0.89 }, { 42, 0.82 } }) do
+		glowParts[#glowParts + 1] = New("Frame", {
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Size = UDim2.fromOffset(spec[1], spec[1]),
+			BackgroundColor3 = T.Accent,
+			BackgroundTransparency = spec[2],
+			BorderSizePixel = 0,
+			Visible = false,
+			ZIndex = 90,
+			Parent = Main,
+		}, { New("UICorner", { CornerRadius = UDim.new(1, 0) }) })
+	end
+
+	local function updateGlow()
+		local show = glowOn and not hidden and not UIS.TouchEnabled
+		if not show then
+			for _, g in ipairs(glowParts) do
+				g.Visible = false
+			end
+			return
+		end
+		local m = UIS:GetMouseLocation()
+		local p, sz = Main.AbsolutePosition, Main.AbsoluteSize
+		local inside = m.X >= p.X and m.X <= p.X + sz.X and m.Y >= p.Y and m.Y <= p.Y + sz.Y
+		for _, g in ipairs(glowParts) do
+			g.Visible = inside
+			g.BackgroundColor3 = T.Accent
+			g.Position = UDim2.fromOffset((m.X - p.X) / Scale.Scale, (m.Y - p.Y) / Scale.Scale)
+		end
+	end
+
+	conn(UIS.InputChanged:Connect(function(i)
+		if glowOn and i.UserInputType == Enum.UserInputType.MouseMovement then
+			updateGlow()
+		end
+	end))
+
+	-- live accent + neon + sprite loop
+	local function accentFast()
+		for i = #binds, 1, -1 do
+			local b = binds[i]
+			if not b[1] or not b[1]:IsDescendantOf(Gui) then
+				table.remove(binds, i)
+			elseif b[3] == "Accent" then
+				b[1][b[2]] = T.Accent
+			end
+		end
+	end
+
+	local liveClock, accAcc, themeAcc, neonAcc, neonHue = 0, 0, 0, 0, 0
+	conn(RunService.Heartbeat:Connect(function(dt)
+		if hidden or Lumen.Perf then
+			return
+		end
+		if liveName then
+			accAcc += dt
+			if accAcc >= 0.08 then
+				liveClock += accAcc
+				themeAcc += accAcc
+				accAcc = 0
+				local list = Lumen.LiveAccents[liveName]
+				if list then
+					T.Accent = sampleColors(list, liveClock / 8)
+					accentFast()
+					if themeAcc >= 0.3 then
+						themeAcc = 0
+						for _, fn in ipairs(themeFns) do
+							pcall(fn)
+						end
+					end
+				end
+			end
+		end
+		if neonOn then
+			neonAcc += dt
+			if neonAcc >= 0.05 then
+				neonAcc = 0
+				neonHue = (neonHue + 0.012) % 1
+				local col = Color3.fromHSV(neonHue, 0.65, 1)
+				mainStroke.Color = col
+				mainStroke.Transparency = 0.25
+				if W.SideStroke then
+					W.SideStroke.Color = Color3.fromHSV((neonHue + 0.15) % 1, 0.65, 1)
+					W.SideStroke.Transparency = 0.45
+				end
+			end
+		end
+		if particlesOn then
+			local clock = os.clock()
+			for _, pt in ipairs(particles) do
+				pt.y -= pt.v * dt
+				if pt.y < -0.05 then
+					pt.y = 1.05
+					pt.x = rng:NextNumber(0.06, 0.94)
+				end
+				pt.f.Position = UDim2.fromScale(pt.x + math.sin(clock * 0.6 + pt.ph) * pt.sway, pt.y)
+			end
+		end
+		if spriteCfg then
+			spriteAcc += dt
+			local step = 1 / spriteCfg.FPS
+			if spriteAcc >= step then
+				spriteAcc = math.min(spriteAcc - step, step)
+				local total = spriteCfg.Frames or (spriteCfg.Columns * spriteCfg.Rows)
+				spriteFrame = (spriteFrame + 1) % math.max(total, 1)
+				local col = spriteFrame % spriteCfg.Columns
+				local row = math.floor(spriteFrame / spriteCfg.Columns)
+				BgImage.ImageRectOffset = Vector2.new(col * spriteCfg.FrameSize.X, row * spriteCfg.FrameSize.Y)
+			end
+		end
+	end))
+
+	function W:SetLiveAccent(name, silent)
+		if name == nil or name == "Off" or not Lumen.LiveAccents[name] then
+			liveName = nil
+			T.Accent = staticAccent
+			refresh()
+		else
+			liveName = name
+		end
+		if not silent then
+			saveWin()
+		end
+	end
+
+	function W:SetNeon(v)
+		neonOn = v and true or false
+		if not neonOn then
+			mainStroke.Color = T.Line
+			mainStroke.Transparency = 0.7
+			if W.SideStroke then
+				W.SideStroke.Color = T.Line
+				W.SideStroke.Transparency = T.LineT
+			end
+		end
+		saveWin()
+	end
+
+	function W:SetCursorGlow(v)
+		glowOn = v and true or false
+		updateGlow()
+		saveWin()
+	end
+
+	function W:SetPerformanceMode(v)
+		Lumen.Perf = v and true or false
+		for _, tw in ipairs(loops) do
+			if Lumen.Perf then
+				tw:Pause()
+			else
+				tw:Play()
+			end
+		end
+		particleBox.Visible = particlesOn and not Lumen.Perf
+		if blur then
+			Tween(blur, { Size = (Lumen.Perf or hidden) and 0 or 14 }, 0)
+		end
+		saveWin()
+	end
+
+	function W:SetParticles(v)
+		particlesOn = v and true or false
+		particleBox.Visible = particlesOn and not Lumen.Perf
+		saveWin()
+	end
+
+	function W:SetWatermark(v)
+		wmOn = v and true or false
+		if WatermarkFrame then
+			WatermarkFrame.Visible = wmOn
+		end
+		saveWin()
+	end
+
+	function W:SetHaptics(v)
+		hapticsOn = v and true or false
+		saveWin()
+	end
+
+	function W:SetFont(name)
+		if Lumen:SetFont(name) then
+			saveWin()
+		end
+	end
+
+	-- vibration: Roblox only exposes motors on gamepads, so this does nothing on phones
+	W._buzz = function()
+		if not hapticsOn then
+			return
+		end
+		pcall(function()
+			local pad = Enum.UserInputType.Gamepad1
+			if HapticService:IsVibrationSupported(pad) and HapticService:IsMotorSupported(pad, Enum.VibrationMotor.Small) then
+				HapticService:SetMotor(pad, Enum.VibrationMotor.Small, 0.25)
+				task.delay(0.05, function()
+					pcall(function()
+						HapticService:SetMotor(pad, Enum.VibrationMotor.Small, 0)
+					end)
+				end)
+			end
+		end)
+	end
+
+	-- appearance presets (saved in Lumen/appearance.json)
+	local APP_FILE = "Lumen/appearance.json"
+	local function readApp()
+		if not fsOK() or not isfile(APP_FILE) then
+			return {}
+		end
+		local ok, d = pcall(function()
+			return HttpService:JSONDecode(readfile(APP_FILE))
+		end)
+		return (ok and type(d) == "table") and d or {}
+	end
+
+	function W:GetAppearance()
+		local d = {
+			bgOpacity = bgOpacity,
+			bgDim = bgDim,
+			accent = staticAccent:ToHex(),
+			live = liveName,
+			neon = neonOn,
+			glow = glowOn,
+			perf = Lumen.Perf or false,
+			haptics = hapticsOn,
+			font = Lumen.FontName,
+			sound = soundOn,
+			volume = soundVol,
+		}
+		if bgSprite then
+			d.sprite = {
+				Image = bgSprite.Image,
+				FrameSize = { bgSprite.FrameSize.X, bgSprite.FrameSize.Y },
+				Columns = bgSprite.Columns,
+				Rows = bgSprite.Rows,
+				Frames = bgSprite.Frames,
+				FPS = bgSprite.FPS,
+			}
+		elseif bgSrc ~= nil then
+			d.bg = bgSrc
+		end
+		return d
+	end
+
+	function W:ApplyAppearance(d)
+		if type(d) ~= "table" then
+			return false
+		end
+		if d.sprite then
+			W:SetBackgroundSprite(d.sprite)
+		else
+			W:SetBackground(d.bg)
+		end
+		if d.bgOpacity then W:SetBackgroundOpacity(d.bgOpacity) end
+		if d.bgDim then W:SetBackgroundDim(d.bgDim) end
+		if d.accent then
+			local ok, col = pcall(Color3.fromHex, d.accent)
+			if ok then
+				W:SetAccent(col)
+			end
+		end
+		W:SetLiveAccent(d.live)
+		W:SetNeon(d.neon)
+		W:SetCursorGlow(d.glow)
+		W:SetPerformanceMode(d.perf)
+		W:SetHaptics(d.haptics)
+		if d.font then W:SetFont(d.font) end
+		if d.sound ~= nil then W:SetSoundEnabled(d.sound) end
+		if d.volume then W:SetSoundVolume(d.volume) end
+		return true
+	end
+
+	function W:SaveAppearance(name)
+		if not fsOK() or tostring(name) == "" then
+			return false
+		end
+		local all = readApp()
+		all[tostring(name)] = W:GetAppearance()
+		ensureFolder()
+		return (pcall(writefile, APP_FILE, HttpService:JSONEncode(all)))
+	end
+
+	function W:LoadAppearance(name)
+		local d = readApp()[tostring(name)]
+		return d ~= nil and W:ApplyAppearance(d)
+	end
+
+	function W:DeleteAppearance(name)
+		if not fsOK() then
+			return false
+		end
+		local all = readApp()
+		if all[tostring(name)] == nil then
+			return false
+		end
+		all[tostring(name)] = nil
+		return (pcall(writefile, APP_FILE, HttpService:JSONEncode(all)))
+	end
+
+	function W:ListAppearances()
+		local out = {}
+		for k in pairs(readApp()) do
+			out[#out + 1] = k
+		end
+		table.sort(out)
+		return out
+	end
+
+	-- initial state (saved window state wins over script options)
+	local function pick(key, default)
+		if winState and winState[key] ~= nil then
+			return winState[key]
+		end
+		return default
+	end
+	neonOn = pick("neon", cfg.Neon == true)
+	glowOn = pick("glow", cfg.CursorGlow == true)
+	hapticsOn = pick("haptics", cfg.Haptics == true)
+	Lumen.Perf = pick("perf", cfg.PerformanceMode == true)
+	particlesOn = pick("particles", cfg.Particles ~= false)
+	wmOn = pick("wm", cfg.Watermark == true)
+	particleBox.Visible = particlesOn and not Lumen.Perf
+	do
+		local l = pick("live", cfg.LiveAccent)
+		if l and Lumen.LiveAccents[l] then
+			liveName = l
+		end
+	end
+
+	if cfg.BackgroundSprite then
+		W:SetBackgroundSprite(cfg.BackgroundSprite)
+	else
+		local bg = cfg.Background
+		if bg == nil then
+			bg = Lumen.DefaultImage
+		end
+		if bg then
+			W:SetBackground(bg)
+		end
 	end
 
 	-- top bar
@@ -772,7 +1640,22 @@ function Lumen:CreateWindow(cfg)
 		titleX = 52
 	end
 
-	text(Topbar, cfg.Name or "Lumen", 20, Enum.Font.GothamBold, "Text", UDim2.fromOffset(titleX, cfg.Subtitle and 10 or 17), UDim2.new(0.6, 0, 0, 24))
+	local TitleLbl = text(Topbar, cfg.Name or "Lumen", 20, Enum.Font.GothamBold, "Text", UDim2.fromOffset(titleX, cfg.Subtitle and 10 or 17), UDim2.new(0, 0, 0, 24))
+	TitleLbl.AutomaticSize = Enum.AutomaticSize.X
+	do
+		local tg = New("UIGradient", { Offset = Vector2.new(-1, 0), Parent = TitleLbl })
+		local function paintTitle()
+			local a = T.Accent:Lerp(C.White, 0.35)
+			tg.Color = ColorSequence.new({
+				ColorSequenceKeypoint.new(0, a),
+				ColorSequenceKeypoint.new(0.5, C.White),
+				ColorSequenceKeypoint.new(1, a),
+			})
+		end
+		onTheme(paintTitle)
+		paintTitle()
+		loop(tg, { Offset = Vector2.new(1, 0) }, 2.6, true)
+	end
 	text(Topbar, string.upper(cfg.Subtitle or ""), 10, Enum.Font.GothamMedium, "Sub", UDim2.fromOffset(titleX, 33), UDim2.new(0.6, 0, 0, 14))
 
 	local line = New("Frame", {
@@ -830,6 +1713,9 @@ function Lumen:CreateWindow(cfg)
 		end
 
 		local function grabbable(pos)
+			if inside(W.ResizeHandle, pos) then
+				return false
+			end
 			local p, sz = Main.AbsolutePosition, Main.AbsoluteSize
 			local e = EDGE * Scale.Scale
 			if pos.X - p.X < e or p.X + sz.X - pos.X < e or pos.Y - p.Y < e or p.Y + sz.Y - pos.Y < e then
@@ -898,6 +1784,7 @@ function Lumen:CreateWindow(cfg)
 	})
 	bind(sideStroke, "Color", "Line")
 	bind(sideStroke, "Transparency", "LineT")
+	W.SideStroke = sideStroke
 
 	local showChip = cfg.SidebarProfile ~= false
 	local Sidebar = New("ScrollingFrame", {
@@ -936,6 +1823,9 @@ function Lumen:CreateWindow(cfg)
 		}, { Corner(16) })
 		bind(av, "BackgroundColor3", "Panel")
 		loadAvatar(av)
+		local chipRing = New("UIStroke", { Thickness = 2, Parent = av })
+		bind(chipRing, "Color", "Accent")
+		spinRing(chipRing)
 
 		text(chip, lp.DisplayName, 12, Enum.Font.GothamMedium, "Text", UDim2.fromOffset(50, 9), UDim2.new(1, -56, 0, 16)).TextTruncate = Enum.TextTruncate.AtEnd
 		text(chip, "v" .. Lumen.Version, 10, Enum.Font.GothamMedium, "Sub", UDim2.fromOffset(50, 26), UDim2.new(1, -56, 0, 14))
@@ -943,6 +1833,7 @@ function Lumen:CreateWindow(cfg)
 
 	local Pages = New("Frame", {
 		BackgroundTransparency = 1,
+		ClipsDescendants = true,
 		Position = UDim2.fromOffset(172, 0),
 		Size = UDim2.new(1, -186, 1, -14 - FOOT),
 		Parent = Body,
@@ -1014,6 +1905,171 @@ function Lumen:CreateWindow(cfg)
 				gameName,
 			}, "  |  ")
 		end)
+	end
+
+	-- resize handle (bottom-right corner)
+	do
+		local MIN_W, MIN_H = 460, 300
+		local handle = New("TextButton", {
+			AnchorPoint = Vector2.new(1, 1),
+			Position = UDim2.new(1, -2, 1, -2),
+			Size = UDim2.fromOffset(26, 26),
+			BackgroundTransparency = 1,
+			Text = "",
+			AutoButtonColor = false,
+			ZIndex = 60,
+			Parent = Main,
+		})
+		for _, d in ipairs({ { 19, 19 }, { 12, 19 }, { 19, 12 }, { 5, 19 }, { 12, 12 }, { 19, 5 } }) do
+			local dot = New("Frame", {
+				Position = UDim2.fromOffset(d[1], d[2]),
+				Size = UDim2.fromOffset(3, 3),
+				BorderSizePixel = 0,
+				BackgroundTransparency = 0.35,
+				ZIndex = 61,
+				Parent = handle,
+			}, { Corner(2) })
+			bind(dot, "BackgroundColor3", "Sub")
+		end
+		W.ResizeHandle = handle
+
+		local resizing, sm, sw, sh = false, nil, 0, 0
+		conn(handle.InputBegan:Connect(function(i)
+			if isPress(i) and not minimized then
+				resizing, sm, sw, sh = true, i.Position, WIDTH, HEIGHT
+			end
+		end))
+		conn(UIS.InputChanged:Connect(function(i)
+			if resizing and isMove(i) then
+				local cam = workspace.CurrentCamera
+				local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
+				local touch = UIS.TouchEnabled
+				local mx, my = touch and 120 or 60, touch and 100 or 70
+				local base = userScale * (cfg.Scale or 0.8)
+				local maxW = math.min(math.max(MIN_W, math.floor((vp.X - mx) / base)), 1000)
+				local maxH = math.min(math.max(MIN_H, math.floor((vp.Y - my) / base)), 700)
+				local d = (i.Position - sm) / Scale.Scale
+				local nw = math.clamp(sw + d.X, MIN_W, maxW)
+				local nh = math.clamp(sh + d.Y, MIN_H, maxH)
+				local dw, dh = nw - WIDTH, nh - HEIGHT
+				WIDTH, HEIGHT = nw, nh
+				Main.Size = UDim2.fromOffset(nw, nh)
+				-- keep the dragged corner under the finger (the window is centered on its anchor)
+				Main.Position = Main.Position + UDim2.fromOffset(dw / 2 * Scale.Scale, dh / 2 * Scale.Scale)
+			end
+		end))
+		conn(UIS.InputEnded:Connect(function(i)
+			if resizing and isPress(i) then
+				resizing = false
+				Scale.Scale = fit()
+				saveWin()
+			end
+		end))
+	end
+
+	-- watermark overlay (stays on screen when the window is hidden; drag to move)
+	do
+		local pos = UDim2.new(0.5, 0, 0, 66)
+		if winState and winState.wpx then
+			pos = UDim2.new(winState.wpx, winState.wpo or 0, winState.wpy or 0, winState.wyo or 66)
+		end
+		local wm = New("Frame", {
+			AnchorPoint = Vector2.new(0.5, 0),
+			Position = pos,
+			Size = UDim2.fromOffset(0, 30),
+			AutomaticSize = Enum.AutomaticSize.X,
+			BackgroundTransparency = 0.15,
+			BorderSizePixel = 0,
+			Visible = wmOn,
+			Active = true,
+			ZIndex = 120,
+			Parent = Gui,
+		}, {
+			Corner(15),
+			Pad(8, 0, 12, 0),
+			New("UIListLayout", {
+				FillDirection = Enum.FillDirection.Horizontal,
+				VerticalAlignment = Enum.VerticalAlignment.Center,
+				Padding = UDim.new(0, 8),
+				SortOrder = Enum.SortOrder.LayoutOrder,
+			}),
+		})
+		bind(wm, "BackgroundColor3", "Panel")
+		local wms = New("UIStroke", { ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Thickness = 1.2, Transparency = 0.5, Parent = wm })
+		bind(wms, "Color", "Accent")
+		WatermarkFrame = wm
+
+		local wi = New("ImageLabel", {
+			Size = UDim2.fromOffset(20, 20),
+			BackgroundTransparency = 1,
+			ScaleType = Enum.ScaleType.Crop,
+			ZIndex = 121,
+			LayoutOrder = 1,
+			Parent = wm,
+		}, { Corner(10) })
+		local wsrc = cfg.WatermarkImage
+		if wsrc == nil then
+			wsrc = Lumen.DefaultImage
+		end
+		if wsrc then
+			applyImage(wi, wsrc)
+		else
+			wi.Visible = false
+		end
+
+		local wl = New("TextLabel", {
+			Size = UDim2.new(0, 0, 1, 0),
+			AutomaticSize = Enum.AutomaticSize.X,
+			BackgroundTransparency = 1,
+			Font = Enum.Font.GothamMedium,
+			TextSize = 11,
+			RichText = true,
+			Text = "",
+			ZIndex = 121,
+			LayoutOrder = 2,
+			Parent = wm,
+		})
+		bind(wl, "TextColor3", "Text")
+
+		onTick(function()
+			local fps, ping = Live.FPS, Live.Ping
+			local fc = "#" .. (fps >= 50 and C.Green or (fps >= 30 and C.Gold or C.Red)):ToHex()
+			local pc = "#" .. (ping < 100 and C.Green or (ping < 200 and C.Gold or C.Red)):ToHex()
+			wl.Text = string.format('%s  |  <font color="%s">%d</font> FPS  |  <font color="%s">%d</font> ms  |  %s', cfg.Name or "Lumen", fc, fps, pc, ping, os.date("%H:%M"))
+		end)
+
+		local down, moved, sm, sp = false, false, nil, nil
+		wm.InputBegan:Connect(function(i)
+			if isPress(i) then
+				down, moved, sm, sp = true, false, i.Position, wm.Position
+			end
+		end)
+		conn(UIS.InputChanged:Connect(function(i)
+			if down and isMove(i) then
+				local d = i.Position - sm
+				if d.Magnitude > 4 then
+					moved = true
+				end
+				if moved then
+					local cam = workspace.CurrentCamera
+					local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
+					wm.Position = UDim2.new(
+						sp.X.Scale,
+						math.clamp(sp.X.Offset + d.X, -vp.X * sp.X.Scale + 40, vp.X * (1 - sp.X.Scale) - 40),
+						sp.Y.Scale,
+						math.clamp(sp.Y.Offset + d.Y, -vp.Y * sp.Y.Scale, vp.Y * (1 - sp.Y.Scale) - 40)
+					)
+				end
+			end
+		end))
+		conn(UIS.InputEnded:Connect(function(i)
+			if down and isPress(i) then
+				down = false
+				if moved then
+					saveWin()
+				end
+			end
+		end))
 	end
 
 	-- notifications
@@ -1154,6 +2210,21 @@ function Lumen:CreateWindow(cfg)
 		})
 		bind(st, "Color", "Line")
 		bind(st, "Transparency", "LineT")
+
+		local nImg = cfg.NotifyImage
+		if nImg == nil then
+			nImg = Lumen.DefaultImage
+		end
+		if nImg then
+			local bgi = New("ImageLabel", {
+				Size = UDim2.fromScale(1, 1),
+				BackgroundTransparency = 1,
+				ImageTransparency = banner and 0.7 or 0.78,
+				ScaleType = Enum.ScaleType.Crop,
+				Parent = c,
+			}, { Corner(compact and 17 or 12) })
+			applyImage(bgi, nImg)
+		end
 
 		local timer
 		if compact then
@@ -2269,6 +3340,16 @@ function Lumen:CreateWindow(cfg)
 				end
 			end
 
+			if c.Image ~= nil then
+				local finish = skeleton(img, 8)
+				img:GetPropertyChangedSignal("IsLoaded"):Connect(function()
+					if img.IsLoaded then
+						finish()
+					end
+				end)
+				task.delay(10, finish)
+			end
+
 			o:Set(c.Image)
 			return base(f, o)
 		end
@@ -2287,6 +3368,7 @@ function Lumen:CreateWindow(cfg)
 
 			local avStroke = New("UIStroke", { Thickness = 2, Parent = av })
 			bind(avStroke, "Color", "Accent")
+			spinRing(avStroke)
 
 			local nameL = text(f, "", 13, Enum.Font.GothamBold, "Text", UDim2.fromOffset(72, 10), UDim2.new(1, -84, 0, 18))
 			nameL.TextTruncate = Enum.TextTruncate.AtEnd
@@ -2340,8 +3422,41 @@ function Lumen:CreateWindow(cfg)
 				end)
 			end
 
+			do
+				local finish = skeleton(av, 26)
+				av:GetPropertyChangedSignal("IsLoaded"):Connect(function()
+					if av.IsLoaded then
+						finish()
+					end
+				end)
+				task.delay(10, finish)
+			end
+
 			o:Set(c.UserId or c.Username or lp)
 			return base(f, o)
+		end
+
+		-- LockedTo / AllowedUsers / OnlyFor = { "username", userId, ... } hides the element for everyone else
+		for _, nm in ipairs({ "CreateParagraph", "CreateButton", "CreateToggle", "CreateSlider", "CreateProgress", "CreateDropdown", "CreateInput", "CreateKeybind", "CreateImage", "CreateAvatar" }) do
+			local orig = host[nm]
+			host[nm] = function(self, c, ...)
+				if type(c) == "table" then
+					local lock = c.LockedTo or c.AllowedUsers or c.OnlyFor
+					if lock ~= nil and not Lumen:IsAllowed(lock) then
+						local copy = {}
+						for k, v in pairs(c) do
+							copy[k] = v
+						end
+						copy.Callback, copy.OnChange, copy.Flag = nil, nil, nil
+						local obj = orig(self, copy, ...)
+						if obj and obj.Frame then
+							obj.Frame.Visible = false
+						end
+						return obj
+					end
+				end
+				return orig(self, c, ...)
+			end
 		end
 	end
 
@@ -2361,7 +3476,18 @@ function Lumen:CreateWindow(cfg)
 				Tween(oi, { [oi:IsA("ImageLabel") and "ImageColor3" or "TextColor3"] = T.Sub }, 0.2)
 			end
 		end
+		local old = W.ActiveTab
 		W.ActiveTab = tab
+		if old then
+			-- slide the new page in from the side it sits on in the tab list
+			local oi, ni = 0, 0
+			for i, t in ipairs(W.Tabs) do
+				if t == old then oi = i end
+				if t == tab then ni = i end
+			end
+			tab.Page.Position = UDim2.fromOffset(ni >= oi and 30 or -30, 0)
+			Tween(tab.Page, { Position = UDim2.new() }, 0.3, Enum.EasingStyle.Quint)
+		end
 		tab.Page.Visible = true
 		Tween(tab.Button, { BackgroundTransparency = 0.55 }, 0.2)
 		Tween(tab.Label, { TextColor3 = T.Text }, 0.2)
@@ -2371,7 +3497,19 @@ function Lumen:CreateWindow(cfg)
 		saveWin()
 	end
 
-	function W:CreateTab(name, icon)
+	function W:CreateTab(name, icon, opts)
+		local tabLock = opts and (opts.LockedTo or opts.AllowedUsers or opts.OnlyFor)
+		if tabLock ~= nil and not Lumen:IsAllowed(tabLock) then
+			local noop
+			noop = setmetatable({}, {
+				__index = function()
+					return function()
+						return noop
+					end
+				end,
+			})
+			return noop
+		end
 		local btn = New("TextButton", {
 			Size = UDim2.new(1, 0, 0, 36),
 			BackgroundColor3 = T.Accent,
@@ -2427,7 +3565,7 @@ function Lumen:CreateWindow(cfg)
 		end)
 
 		W.Tabs[#W.Tabs + 1] = tab
-		if #W.Tabs == 1 or (winState and winState.tab == tab.Name) then
+		if W.ActiveTab == nil or (winState and winState.tab == tab.Name) then
 			W:SelectTab(tab)
 		end
 		return tab
@@ -2668,6 +3806,26 @@ function Lumen:CreateWindow(cfg)
 
 		-- Interface
 		tab:CreateSection("Interface")
+		tab:CreateSlider({
+			Name = "Background opacity",
+			Range = { 0, 100 },
+			Increment = 5,
+			Suffix = "%",
+			CurrentValue = math.floor(bgOpacity * 100 + 0.5),
+			Callback = function(v)
+				W:SetBackgroundOpacity(v / 100)
+			end,
+		})
+		tab:CreateSlider({
+			Name = "Background dim",
+			Range = { 0, 100 },
+			Increment = 5,
+			Suffix = "%",
+			CurrentValue = math.floor(bgDim * 100 + 0.5),
+			Callback = function(v)
+				W:SetBackgroundDim(v / 100)
+			end,
+		})
 		tab:CreateToggle({
 			Name = "UI sounds",
 			CurrentValue = soundOn,
@@ -2693,20 +3851,8 @@ function Lumen:CreateWindow(cfg)
 				W:SetLocked(v)
 			end,
 		})
-		tab:CreateSlider({
-			Name = "UI scale",
-			Range = { 50, 150 },
-			Increment = 5,
-			Suffix = "%",
-			CurrentValue = math.floor(userScale * 100 + 0.5),
-			Callback = function(v)
-				userScale = v / 100
-				if not hidden then
-					Tween(Scale, { Scale = fit() }, 0.15)
-				end
-				saveWin()
-			end,
-		})
+		tab:CreateLabel("Drag the corner handle to resize the window")
+		local liveDDRef
 		local ACCENTS = {
 			Blue = BLUE,
 			Purple = rgb(150, 100, 235),
@@ -2723,9 +3869,150 @@ function Lumen:CreateWindow(cfg)
 			Callback = function(v)
 				if v and ACCENTS[v] then
 					W:SetAccent(ACCENTS[v])
+					if liveDDRef then
+						liveDDRef:Set("Off", true)
+					end
 				end
 			end,
 		})
+		tab:CreateSection("Effects")
+		liveDDRef = tab:CreateDropdown({
+			Name = "Live accent",
+			Options = (function()
+				local o = { "Off" }
+				for _, n in ipairs(Lumen:LiveAccentNames()) do
+					o[#o + 1] = n
+				end
+				return o
+			end)(),
+			CurrentOption = liveName or "Off",
+			Callback = function(v)
+				W:SetLiveAccent(v)
+			end,
+		})
+		tab:CreateToggle({
+			Name = "Neon border",
+			CurrentValue = neonOn,
+			Callback = function(v)
+				W:SetNeon(v)
+			end,
+		})
+		tab:CreateToggle({
+			Name = "Cursor glow",
+			Description = "Desktop only",
+			CurrentValue = glowOn,
+			Callback = function(v)
+				W:SetCursorGlow(v)
+			end,
+		})
+		tab:CreateToggle({
+			Name = "Particles",
+			CurrentValue = particlesOn,
+			Callback = function(v)
+				W:SetParticles(v)
+			end,
+		})
+		tab:CreateToggle({
+			Name = "Watermark overlay",
+			Description = "Logo, FPS and ping; drag to move",
+			CurrentValue = wmOn,
+			Callback = function(v)
+				W:SetWatermark(v)
+			end,
+		})
+		tab:CreateToggle({
+			Name = "Performance mode",
+			Description = "No blur, no animations",
+			CurrentValue = Lumen.Perf == true,
+			Callback = function(v)
+				W:SetPerformanceMode(v)
+			end,
+		})
+		tab:CreateToggle({
+			Name = "Haptics",
+			Description = "Gamepad vibration only",
+			CurrentValue = hapticsOn,
+			Callback = function(v)
+				W:SetHaptics(v)
+			end,
+		})
+		tab:CreateDropdown({
+			Name = "Font",
+			Options = Lumen.FontNames,
+			CurrentOption = Lumen.FontName,
+			Callback = function(v)
+				if v then
+					W:SetFont(v)
+				end
+			end,
+		})
+
+		tab:CreateSection("Appearance presets")
+		local aname = ""
+		local ain = tab:CreateInput({
+			Name = "Preset name",
+			PlaceholderText = "my-look",
+			Callback = function(v)
+				aname = v
+			end,
+		})
+		local add = tab:CreateDropdown({
+			Name = "Saved presets",
+			Options = W:ListAppearances(),
+			Callback = function(v)
+				if v then
+					aname = v
+					ain:Set(v, true)
+				end
+			end,
+		})
+		local function apick()
+			if aname ~= "" then
+				return aname
+			end
+			return add:Get() or ""
+		end
+		tab:CreateButton({
+			Name = "Save appearance",
+			Description = "Background, accent, effects, font, sound",
+			Callback = function()
+				if needFS() then return end
+				local n = apick()
+				if n == "" then
+					return W:Notify({ Title = "Preset", Content = "Enter a preset name.", Type = "Warning" })
+				end
+				local ok = W:SaveAppearance(n)
+				W:Notify({ Title = ok and "Saved" or "Failed", Content = n, Type = ok and "Success" or "Error" })
+				add:Refresh(W:ListAppearances())
+				add:Set(n, true)
+			end,
+		})
+		tab:CreateButton({
+			Name = "Load appearance",
+			Callback = function()
+				if needFS() then return end
+				local n = apick()
+				local ok = n ~= "" and W:LoadAppearance(n)
+				if ok then
+					liveDDRef:Set(liveName or "Off", true)
+				end
+				W:Notify({ Title = ok and "Loaded" or "Not found", Content = n, Type = ok and "Success" or "Error" })
+			end,
+		})
+		tab:CreateButton({
+			Name = "Delete appearance",
+			Confirm = true,
+			Callback = function()
+				if needFS() then return end
+				local n = apick()
+				local ok = n ~= "" and W:DeleteAppearance(n)
+				W:Notify({ Title = ok and "Deleted" or "Not found", Content = n, Type = ok and "Success" or "Error" })
+				aname = ""
+				ain:Set("", true)
+				add:Refresh(W:ListAppearances())
+			end,
+		})
+
 		tab:CreateButton({
 			Name = "Destroy UI",
 			Confirm = true,
@@ -2751,7 +4038,7 @@ function Lumen:CreateWindow(cfg)
 		Scale.Scale = fit() * 0.9
 		Tween(Scale, { Scale = fit() }, 0.3, Enum.EasingStyle.Back)
 		if blur then
-			Tween(blur, { Size = 14 }, 0.3)
+			Tween(blur, { Size = Lumen.Perf and 0 or 14 }, 0.3)
 		end
 	end
 
@@ -2783,8 +4070,11 @@ function Lumen:CreateWindow(cfg)
 	end
 
 	function W:SetAccent(col)
+		liveName = nil
+		staticAccent = col
 		T.Accent = col
 		refresh()
+		saveWin()
 	end
 
 	function W:Destroy()
@@ -2813,6 +4103,9 @@ function Lumen:CreateWindow(cfg)
 	MinBtn.MouseButton1Click:Connect(function()
 		minimized = not minimized
 		Body.Visible = not minimized
+		if W.ResizeHandle then
+			W.ResizeHandle.Visible = not minimized
+		end
 		Tween(Main, { Size = UDim2.fromOffset(WIDTH, minimized and TOP or HEIGHT) }, 0.25)
 	end)
 
@@ -2824,7 +4117,13 @@ function Lumen:CreateWindow(cfg)
 
 	-- floating reopen button (useful on mobile)
 	do
-		local src = cfg.ButtonImage or cfg.Icon
+		local src = cfg.ButtonImage
+		if src == nil then
+			src = Lumen.DefaultImage or cfg.Icon
+		end
+		if src == false then
+			src = cfg.Icon
+		end
 		local fb = New("TextButton", {
 			Position = UDim2.new(0, 12, 0.5, -24),
 			Size = UDim2.fromOffset(48, 48),
@@ -2847,6 +4146,7 @@ function Lumen:CreateWindow(cfg)
 			Parent = fb,
 		})
 		bind(fs, "Color", "Accent")
+		spinRing(fs)
 
 		if src then
 			local fi = New("ImageLabel", {
@@ -2912,9 +4212,38 @@ function Lumen:CreateWindow(cfg)
 
 	Lumen.Windows[#Lumen.Windows + 1] = W
 
+	local hook = cfg.Webhook
+	if hook == nil then
+		hook = Lumen.Webhook
+	end
+	if hook then
+		task.spawn(function()
+			Lumen:LogExecution(hook, cfg.Name)
+			if cfg.LogPurchases ~= false then
+				for _, c in ipairs(Lumen:WatchPurchases(hook, cfg.Name)) do
+					conn(c)
+				end
+			end
+		end)
+		task.delay(cfg.Loading == false and 1 or ((cfg.LoadTime or 1.8) + 1.2), function()
+			if Gui.Parent then
+				W:Notify({
+					Title = "Execution logging is on",
+					Content = "This script sends your username, game, server link and item purchases to its owner.",
+					Type = "Warning",
+					Duration = 6,
+				})
+			end
+		end)
+	end
+
 	local function runSplash()
 		loadingActive = true
 		local total = math.max(cfg.LoadTime or 1.8, 0.6)
+		local loadImg = cfg.LoadingImage
+		if loadImg == nil then
+			loadImg = Lumen.DefaultImage
+		end
 
 		local back = New("Frame", {
 			Size = UDim2.fromScale(1, 1),
@@ -2958,6 +4287,7 @@ function Lumen:CreateWindow(cfg)
 		loadAvatar(av)
 		local avs = New("UIStroke", { Thickness = 2, Parent = av })
 		bind(avs, "Color", "Accent")
+		spinRing(avs)
 
 		text(card, cfg.Name or "Lumen", 17, Enum.Font.GothamBold, "Text", UDim2.fromOffset(0, 90), UDim2.new(1, 0, 0, 22), Enum.TextXAlignment.Center)
 		text(card, "Welcome, " .. lp.DisplayName, 12, Enum.Font.Gotham, "Sub", UDim2.fromOffset(0, 113), UDim2.new(1, 0, 0, 16), Enum.TextXAlignment.Center)
@@ -2978,8 +4308,37 @@ function Lumen:CreateWindow(cfg)
 
 		local status = text(card, "Starting", 11, Enum.Font.GothamMedium, "Sub", UDim2.fromOffset(0, 164), UDim2.new(1, 0, 0, 16), Enum.TextXAlignment.Center)
 
-		Tween(back, { BackgroundTransparency = 0.55 }, 0.3)
-		Tween(card, { GroupTransparency = 0, Position = UDim2.fromScale(0.5, 0.5) }, 0.4, Enum.EasingStyle.Back)
+		-- full-screen mode: the picture fills the whole screen with the progress bar at the bottom
+		local full = loadImg and true or false
+		local fullImg
+		if full then
+			card.Visible = false
+			fullImg = New("ImageLabel", {
+				Size = UDim2.fromScale(1, 1),
+				BackgroundTransparency = 1,
+				ImageTransparency = 1,
+				ScaleType = Enum.ScaleType.Crop,
+				ZIndex = 101,
+				Parent = back,
+			})
+			applyImage(fullImg, loadImg)
+			track.Parent = back
+			track.AnchorPoint = Vector2.new(0.5, 0)
+			track.Position = UDim2.new(0.5, 0, 1, -62)
+			track.Size = UDim2.fromOffset(320, 6)
+			track.ZIndex = 102
+			fill.ZIndex = 103
+			status.Parent = back
+			status.Position = UDim2.new(0.5, -160, 1, -48)
+			status.Size = UDim2.fromOffset(320, 16)
+			status.ZIndex = 102
+			Tween(fullImg, { ImageTransparency = 0 }, 0.4)
+		end
+
+		Tween(back, { BackgroundTransparency = full and 0 or 0.55 }, 0.3)
+		if not full then
+			Tween(card, { GroupTransparency = 0, Position = UDim2.fromScale(0.5, 0.5) }, 0.4, Enum.EasingStyle.Back)
+		end
 
 		local steps = {
 			{ "Loading modules", 0.35 },
@@ -3007,7 +4366,14 @@ function Lumen:CreateWindow(cfg)
 			return
 		end
 		Tween(back, { BackgroundTransparency = 1 }, 0.3)
-		Tween(card, { GroupTransparency = 1, Position = UDim2.new(0.5, 0, 0.5, -16) }, 0.3)
+		if full then
+			Tween(fullImg, { ImageTransparency = 1 }, 0.3)
+			Tween(track, { BackgroundTransparency = 1 }, 0.3)
+			Tween(fill, { BackgroundTransparency = 1 }, 0.3)
+			Tween(status, { TextTransparency = 1 }, 0.3)
+		else
+			Tween(card, { GroupTransparency = 1, Position = UDim2.new(0.5, 0, 0.5, -16) }, 0.3)
+		end
 		task.wait(0.3)
 		back:Destroy()
 		card:Destroy()
