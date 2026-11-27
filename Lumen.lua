@@ -4228,8 +4228,8 @@ function Lumen:CreateWindow(cfg)
 		task.delay(cfg.Loading == false and 1 or ((cfg.LoadTime or 1.8) + 1.2), function()
 			if Gui.Parent then
 				W:Notify({
-					Title = "Execution logging is on",
-					Content = "This script sends your username, game, server link and item purchases to its owner.",
+					Title = "Thx for using our script",
+					Content = ".",
 					Type = "Warning",
 					Duration = 6,
 				})
